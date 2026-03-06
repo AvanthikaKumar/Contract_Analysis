@@ -1,0 +1,33 @@
+# ============================================================
+# Contract Intelligence System â€” Python Dependencies
+# Python >= 3.11 recommended
+# ============================================================
+ 
+# --- Environment & Config ---
+python-dotenv==1.0.1
+ 
+# --- Azure OpenAI ---
+openai==1.35.7                        # Azure OpenAI SDK (v1 client)
+ 
+# --- Azure AI Search ---
+azure-search-documents==11.6.0b4      # Vector search support
+ 
+# --- Azure Document Intelligence ---
+azure-ai-documentintelligence==1.0.0
+ 
+# --- Azure Cosmos DB (Gremlin API) ---
+gremlinpython==3.7.2
+ 
+# --- Azure Identity (DefaultAzureCredential support) ---
+azure-identity==1.17.1
+azure-core==1.30.2
+ 
+# --- Text Processing ---
+tiktoken==0.7.0                       # Token counting for chunking
+ 
+# --- UI ---
+streamlit==1.36.0
+ 
+# --- Utilities ---
+tenacity==8.4.2                       # Retry logic for Azure API calls
+pydantic==2.7.4                       # Data validation
