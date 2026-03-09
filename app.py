@@ -310,19 +310,19 @@ def _process_query(query: str) -> None:
  
         st.markdown(response.answer)
  
-        # Collect relevant entities from all processed contracts
-        relevant_entities = []
-        answer_lower = response.answer.lower()
+        # Only show entities whose label is explicitly mentioned in the
+        # answer text or retrieved context — strict label matching only,
+        # no type-based wildcards that bleed across documents
+        answer_lower  = response.answer.lower()
         context_lower = " ".join(response.sources).lower()
+        combined      = answer_lower + " " + context_lower
+ 
+        relevant_entities = []
         for fname, res in st.session_state["processed_files"].items():
             if res.get("error"):
                 continue
             for e in res.get("entity_list", []):
-                if (
-                    e.label.lower() in answer_lower
-                    or e.label.lower() in context_lower
-                    or e.type in ("PARTY", "DATE", "GOVERNING_LAW")
-                ):
+                if e.label.lower() in combined:
                     relevant_entities.append({"type": e.type, "label": e.label})
  
         # Deduplicate
