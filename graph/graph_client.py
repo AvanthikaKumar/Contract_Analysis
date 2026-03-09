@@ -3,7 +3,7 @@ graph/graph_client.py
 ----------------------
 Cosmos DB Gremlin API connection client for the Contract Intelligence System.
  
-Responsibilities:
+Responsibilities: 
 - Establish and maintain a connection to Cosmos DB via the Gremlin protocol.
 - Expose a single method to execute Gremlin traversal queries.
 - Handle connection errors cleanly with retries.
@@ -18,7 +18,7 @@ Usage:
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional 
  
 # ---------------------------------------------------------------------------
 # Path fix
