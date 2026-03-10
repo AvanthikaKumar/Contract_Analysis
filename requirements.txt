@@ -3,31 +3,43 @@
 # Python >= 3.11 recommended
 # ============================================================
  
-# --- Environment & Config ---
-python-dotenv==1.0.1
+# Environment & Config
+python-dotenv #==1.0.1
  
-# --- Azure OpenAI ---
-openai==1.35.7                        # Azure OpenAI SDK (v1 client)
+# Azure OpenAI
+openai #==1.35.7
  
-# --- Azure AI Search ---
-azure-search-documents==11.6.0b4      # Vector search support
+# Azure AI Search
+azure-search-documents #==11.6.0b4
  
-# --- Azure Document Intelligence ---
-azure-ai-documentintelligence==1.0.0
+# Azure Document Intelligence
+azure-ai-documentintelligence #==1.0.0
  
-# --- Azure Cosmos DB (Gremlin API) ---
-gremlinpython==3.7.2
+# Azure Cosmos DB (Gremlin API)
+gremlinpython #==3.7.2
  
-# --- Azure Identity (DefaultAzureCredential support) ---
-azure-identity==1.17.1
-azure-core==1.30.2
+# Azure Identity
+azure-identity #==1.17.1
+azure-core #==1.30.2
  
-# --- Text Processing ---
-tiktoken==0.7.0                       # Token counting for chunking
+# LangChain
+langchain #==0.2.16
+langchain-core #==0.2.38
+langchain-openai #==0.1.23
+langchain-community #==0.2.16
  
-# --- UI ---
-streamlit==1.36.0
+# LangGraph
+langgraph #==0.2.28
  
-# --- Utilities ---
-tenacity==8.4.2                       # Retry logic for Azure API calls
-pydantic==2.7.4                       # Data validation
+# Text Processing
+tiktoken #==0.7.0
+ 
+# UI
+streamlit #==1.36.0
+ 
+# Utilities
+tenacity #==8.4.2
+pydantic #==2.7.4
+ 
+# PDF Processing
+pypdf #==4.2.0

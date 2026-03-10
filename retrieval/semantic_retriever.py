@@ -1,32 +1,25 @@
 """
 retrieval/semantic_retriever.py
 --------------------------------
-Performs semantic vector search against Azure AI Search
-to retrieve the most relevant contract chunks for a given query.
+LangChain-wrapped retriever for Azure AI Search.
  
-Responsibilities:
-- Accept a natural language query string.
-- Convert query to an embedding vector.
-- Search Azure AI Search for top-K relevant chunks.
-- Return clean RetrievedContext objects ready for the LLM.
- 
-Usage:
-    from retrieval.semantic_retriever import semantic_retriever
- 
-    context = semantic_retriever.retrieve("What are the payment terms?")
+Replaces the custom vector search with a LangChain BaseRetriever
+so it plugs directly into LangChain/LangGraph chains.
 """
  
 import logging
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import List
  
-# ---------------------------------------------------------------------------
-# Path fix
-# ---------------------------------------------------------------------------
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+ 
+from langchain_core.retrievers import BaseRetriever
+from langchain_core.documents import Document
+from langchain_core.callbacks.manager import CallbackManagerForRetrieverRun
  
 from config.settings import settings
 from ingestion.embedder import embedder
@@ -35,170 +28,134 @@ from ingestion.vector_store import vector_store, SearchResult
 logger = logging.getLogger(__name__)
  
  
-# ---------------------------------------------------------------------------
-# Retrieved context dataclass
-# ---------------------------------------------------------------------------
+# ── Keep original dataclass so LangGraph pipeline stays compatible ─────────
 @dataclass
 class RetrievedContext:
-    """
-    The result of a semantic retrieval operation.
- 
-    Attributes:
-        query:          The original user query.
-        chunks:         List of SearchResult objects ordered by relevance.
-        combined_text:  All chunk texts joined for direct LLM injection.
-        top_k:          Number of results requested.
-    """
-    query: str
-    chunks: list[SearchResult]
+    query:         str
+    chunks:        list[SearchResult]
     combined_text: str
-    top_k: int
+    top_k:         int
  
-    def __repr__(self) -> str:
-        return (
-            f"RetrievedContext("
-            f"query='{self.query[:50]}...', "
-            f"chunks={len(self.chunks)}, "
-            f"chars={len(self.combined_text)})"
+ 
+# ── LangChain BaseRetriever implementation ─────────────────────────────────
+class ContractRetriever(BaseRetriever):
+    """
+    LangChain-compatible retriever that searches Azure AI Search
+    using vector embeddings.
+ 
+    Wraps our existing vector_store so it can be used in any
+    LangChain chain or LangGraph node directly.
+    """
+ 
+    top_k:       int = 5
+    source_file: str | None = None
+ 
+    class Config:
+        arbitrary_types_allowed = True
+ 
+    def _get_relevant_documents(
+        self,
+        query: str,
+        *,
+        run_manager: CallbackManagerForRetrieverRun,
+    ) -> List[Document]:
+        """
+        Required LangChain method.
+        Embeds the query and returns matching contract chunks as Documents.
+        """
+        logger.info(
+            "ContractRetriever._get_relevant_documents | query='%s' | filter=%s",
+            query[:60], self.source_file,
         )
  
+        query_vector = embedder.embed_query(query)
+        results = vector_store.search(
+            query_vector=query_vector,
+            top_k=self.top_k,
+            source_file=self.source_file,
+        )
  
-# ---------------------------------------------------------------------------
-# Semantic retriever
-# ---------------------------------------------------------------------------
+        docs = []
+        for r in results:
+            docs.append(Document(
+                page_content=r.text,
+                metadata={
+                    "source_file": r.source_file,
+                    "score":       r.score,
+                    "chunk_id":    r.chunk_id,
+                },
+            ))
+ 
+        logger.info("ContractRetriever returned %d documents", len(docs))
+        return docs
+ 
+ 
+# ── SemanticRetriever — keeps old interface for LangGraph nodes ────────────
 class SemanticRetriever:
     """
-    Orchestrates query embedding and vector search to retrieve
-    relevant contract chunks from Azure AI Search.
+    Thin wrapper that keeps the existing retrieve() interface
+    while using ContractRetriever internally.
+ 
+    This means the LangGraph pipeline (retrieve_node) needs
+    zero changes — it still calls semantic_retriever.retrieve().
     """
  
     def __init__(self) -> None:
-        logger.info("SemanticRetriever initialised.")
+        logger.info("SemanticRetriever initialised (LangChain backend).")
  
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
     def retrieve(
         self,
         query: str,
         top_k: int | None = None,
         source_file: str | None = None,
     ) -> RetrievedContext:
-        """
-        Retrieve the most relevant contract chunks for a query.
- 
-        Args:
-            query:       Natural language question from the user.
-            top_k:       Number of chunks to retrieve. Defaults to
-                         settings.app.retrieval_top_k.
-            source_file: Optional filter to search within one document only.
- 
-        Returns:
-            RetrievedContext with ranked chunks and combined text.
- 
-        Raises:
-            ValueError: If query is empty.
-        """
-        if not query or not query.strip():
-            raise ValueError("Query cannot be empty.")
  
         k = top_k or settings.app.retrieval_top_k
  
-        logger.info(
-            "Retrieving context | query='%s' | top_k=%d | filter=%s",
-            query[:80],
-            k,
-            source_file or "none",
-        )
+        # Build a ContractRetriever with the right params and invoke it
+        retriever = ContractRetriever(top_k=k, source_file=source_file)
+        docs = retriever.invoke(query)
  
-        # Step 1 — Embed the query
-        query_vector = embedder.embed_query(query)
+        # Convert LangChain Documents back to SearchResult for compatibility
+        chunks = []
+        for doc in docs:
+            chunks.append(SearchResult(
+                text=doc.page_content,
+                source_file=doc.metadata.get("source_file", ""),
+                score=doc.metadata.get("score", 0.0),
+                chunk_id=doc.metadata.get("chunk_id", ""),
+            ))
  
-        # Step 2 — Vector search
-        results = vector_store.search(
-            query_vector=query_vector,
-            top_k=k,
-            source_file=source_file,
-        )
- 
-        # Step 3 — Build combined context text for LLM injection
-        combined_text = self._build_combined_text(results)
- 
-        logger.info(
-            "Retrieval complete | chunks=%d | context_chars=%d",
-            len(results),
-            len(combined_text),
-        )
+        combined_text = self._build_combined_text(chunks)
  
         return RetrievedContext(
             query=query,
-            chunks=results,
+            chunks=chunks,
             combined_text=combined_text,
             top_k=k,
         )
  
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
     def _build_combined_text(self, results: list[SearchResult]) -> str:
-        """
-        Join retrieved chunk texts into a single context block.
- 
-        Each chunk is separated by a clear delimiter so the LLM
-        can distinguish between different parts of the contract.
- 
-        Args:
-            results: Ordered list of SearchResult objects.
- 
-        Returns:
-            Combined context string for LLM injection.
-        """
         if not results:
             return ""
- 
         parts = []
-        for i, result in enumerate(results, start=1):
-            parts.append(
-                f"[Excerpt {i} — Source: {result.source_file}]\n"
-                f"{result.text}"
-            )
- 
+        for i, r in enumerate(results, 1):
+            parts.append(f"[Excerpt {i} — Source: {r.source_file}]\n{r.text}")
         return "\n\n---\n\n".join(parts)
  
+    def as_langchain_retriever(
+        self,
+        top_k: int | None = None,
+        source_file: str | None = None,
+    ) -> ContractRetriever:
+        """
+        Return a raw LangChain BaseRetriever for direct use in chains.
+        e.g. retrieval_chain = retriever | prompt | llm
+        """
+        return ContractRetriever(
+            top_k=top_k or settings.app.retrieval_top_k,
+            source_file=source_file,
+        )
  
-# ---------------------------------------------------------------------------
-# Module-level singleton
-# ---------------------------------------------------------------------------
+ 
 semantic_retriever = SemanticRetriever()
- 
- 
-# ---------------------------------------------------------------------------
-# Smoke test — python retrieval/semantic_retriever.py
-# ---------------------------------------------------------------------------
-if __name__ == "__main__":
-    print("\n=== SemanticRetriever Smoke Test ===\n")
- 
-    retriever = SemanticRetriever()
- 
-    test_queries = [
-        "What are the payment terms?",
-        "Who are the parties in the agreement?",
-        "What are the termination conditions?",
-    ]
- 
-    for query in test_queries:
-        print(f"Query: '{query}'")
-        try:
-            context = retriever.retrieve(query, top_k=3)
-            print(f"  Chunks retrieved : {len(context.chunks)}")
-            print(f"  Context chars    : {len(context.combined_text)}")
-            if context.chunks:
-                print(f"  Top result score : {context.chunks[0].score:.4f}")
-                print(f"  Top result source: {context.chunks[0].source_file}")
-                print(f"  Preview          : {context.chunks[0].text[:150]}...")
-            print(f"  PASSED\n")
-        except Exception as exc:
-            print(f"  FAILED: {exc}\n")
- 
-    print("=== Smoke test complete ===\n")
- 
