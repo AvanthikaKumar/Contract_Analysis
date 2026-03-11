@@ -177,7 +177,6 @@ with st.sidebar:
                     c5.metric("🕸️ Vertices", result["vertices_created"])
                     c6.metric("➡️ Edges", result["edges_created"])
  
-            st.balloons()
             st.success("🎉 All contracts processed. Ask questions on the right →")
  
     # ── Processed files history ────────────────────────────────────────
