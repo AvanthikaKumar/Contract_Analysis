@@ -121,8 +121,8 @@ def _build_settings() -> Settings:
         index_name=_optional("AZURE_SEARCH_INDEX_NAME", "contract-chunks"),
     )
     document_intelligence = AzureDocumentIntelligenceConfig(
-        endpoint=_require("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT").rstrip("/"),
-        api_key=_require("AZURE_DOCUMENT_INTELLIGENCE_API_KEY"),
+        endpoint=_optional("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", ""),
+        api_key=_optional("AZURE_DOCUMENT_INTELLIGENCE_KEY", ""),
     )
     cosmos_db = CosmosDBConfig(
         gremlin_endpoint=_require("COSMOS_GREMLIN_ENDPOINT"),
@@ -177,4 +177,3 @@ if __name__ == "__main__":
     print(f"  Chunk Overlap          : {settings.app.chunk_overlap}")
     print(f"  Log Level              : {settings.app.log_level}")
     print("\n  All settings validated successfully.\n")
- 

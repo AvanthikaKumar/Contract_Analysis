@@ -1,10 +1,7 @@
 """
 retrieval/semantic_retriever.py
 --------------------------------
-LangChain-wrapped retriever for Azure AI Search.
- 
-Replaces the custom vector search with a LangChain BaseRetriever
-so it plugs directly into LangChain/LangGraph chains.
+LangChain 1.x compatible retriever wrapping Azure AI Search.
 """
  
 import logging
@@ -19,7 +16,7 @@ if str(_PROJECT_ROOT) not in sys.path:
  
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.documents import Document
-from langchain_core.callbacks.manager import CallbackManagerForRetrieverRun
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
  
 from config.settings import settings
 from ingestion.embedder import embedder
@@ -28,30 +25,24 @@ from ingestion.vector_store import vector_store, SearchResult
 logger = logging.getLogger(__name__)
  
  
-# ── Keep original dataclass so LangGraph pipeline stays compatible ─────────
 @dataclass
 class RetrievedContext:
     query:         str
-    chunks:        list[SearchResult]
+    chunks:        list
     combined_text: str
     top_k:         int
  
  
-# ── LangChain BaseRetriever implementation ─────────────────────────────────
+# ── LangChain BaseRetriever ────────────────────────────────────────────────
 class ContractRetriever(BaseRetriever):
     """
-    LangChain-compatible retriever that searches Azure AI Search
-    using vector embeddings.
- 
-    Wraps our existing vector_store so it can be used in any
-    LangChain chain or LangGraph node directly.
+    LangChain-compatible retriever for Azure AI Search.
+    Can be used directly in any LangChain chain.
     """
- 
     top_k:       int = 5
-    source_file: str | None = None
+    source_file: str = ""
  
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = {"arbitrary_types_allowed": True}
  
     def _get_relevant_documents(
         self,
@@ -59,49 +50,41 @@ class ContractRetriever(BaseRetriever):
         *,
         run_manager: CallbackManagerForRetrieverRun,
     ) -> List[Document]:
-        """
-        Required LangChain method.
-        Embeds the query and returns matching contract chunks as Documents.
-        """
-        logger.info(
-            "ContractRetriever._get_relevant_documents | query='%s' | filter=%s",
-            query[:60], self.source_file,
-        )
+ 
+        logger.info("ContractRetriever | query='%s' | filter='%s'", query[:60], self.source_file)
  
         query_vector = embedder.embed_query(query)
         results = vector_store.search(
             query_vector=query_vector,
             top_k=self.top_k,
-            source_file=self.source_file,
+            source_file=self.source_file if self.source_file else None,
         )
  
-        docs = []
-        for r in results:
-            docs.append(Document(
+        docs = [
+            Document(
                 page_content=r.text,
                 metadata={
                     "source_file": r.source_file,
                     "score":       r.score,
                     "chunk_id":    r.chunk_id,
                 },
-            ))
- 
-        logger.info("ContractRetriever returned %d documents", len(docs))
+            )
+            for r in results
+        ]
+        logger.info("ContractRetriever returned %d docs", len(docs))
         return docs
  
  
-# ── SemanticRetriever — keeps old interface for LangGraph nodes ────────────
+# ── SemanticRetriever — preserves old interface ───────────────────────────
 class SemanticRetriever:
     """
-    Thin wrapper that keeps the existing retrieve() interface
-    while using ContractRetriever internally.
- 
-    This means the LangGraph pipeline (retrieve_node) needs
-    zero changes — it still calls semantic_retriever.retrieve().
+    Keeps the existing retrieve() interface so LangGraph nodes
+    and the rest of the app need zero changes.
+    Internally delegates to ContractRetriever (LangChain BaseRetriever).
     """
  
     def __init__(self) -> None:
-        logger.info("SemanticRetriever initialised (LangChain backend).")
+        logger.info("SemanticRetriever initialised (LangChain 1.x backend).")
  
     def retrieve(
         self,
@@ -110,51 +93,40 @@ class SemanticRetriever:
         source_file: str | None = None,
     ) -> RetrievedContext:
  
-        k = top_k or settings.app.retrieval_top_k
+        k          = top_k or settings.app.retrieval_top_k
+        retriever  = ContractRetriever(top_k=k, source_file=source_file or "")
+        docs       = retriever.invoke(query)
  
-        # Build a ContractRetriever with the right params and invoke it
-        retriever = ContractRetriever(top_k=k, source_file=source_file)
-        docs = retriever.invoke(query)
+        chunks = [
+            SearchResult(
+                text=d.page_content,
+                source_file=d.metadata.get("source_file", ""),
+                score=d.metadata.get("score", 0.0),
+                chunk_id=d.metadata.get("chunk_id", ""),
+            )
+            for d in docs
+        ]
  
-        # Convert LangChain Documents back to SearchResult for compatibility
-        chunks = []
-        for doc in docs:
-            chunks.append(SearchResult(
-                text=doc.page_content,
-                source_file=doc.metadata.get("source_file", ""),
-                score=doc.metadata.get("score", 0.0),
-                chunk_id=doc.metadata.get("chunk_id", ""),
-            ))
- 
-        combined_text = self._build_combined_text(chunks)
+        parts = [
+            f"[Excerpt {i} — Source: {r.source_file}]\n{r.text}"
+            for i, r in enumerate(chunks, 1)
+        ]
+        combined_text = "\n\n---\n\n".join(parts)
  
         return RetrievedContext(
-            query=query,
-            chunks=chunks,
-            combined_text=combined_text,
-            top_k=k,
+            query=query, chunks=chunks,
+            combined_text=combined_text, top_k=k,
         )
- 
-    def _build_combined_text(self, results: list[SearchResult]) -> str:
-        if not results:
-            return ""
-        parts = []
-        for i, r in enumerate(results, 1):
-            parts.append(f"[Excerpt {i} — Source: {r.source_file}]\n{r.text}")
-        return "\n\n---\n\n".join(parts)
  
     def as_langchain_retriever(
         self,
         top_k: int | None = None,
         source_file: str | None = None,
     ) -> ContractRetriever:
-        """
-        Return a raw LangChain BaseRetriever for direct use in chains.
-        e.g. retrieval_chain = retriever | prompt | llm
-        """
+        """Return raw LangChain retriever for use in chains."""
         return ContractRetriever(
             top_k=top_k or settings.app.retrieval_top_k,
-            source_file=source_file,
+            source_file=source_file or "",
         )
  
  

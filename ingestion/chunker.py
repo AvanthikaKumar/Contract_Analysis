@@ -297,7 +297,7 @@ if __name__ == "__main__":
     the State of Delaware, without regard to its conflict of law provisions.
     """ * 5  # Repeat to simulate a longer document
  
-    c = Chunker(chunk_size=500, chunk_overlap=100)
+    c = Chunker(chunk_size=1500, chunk_overlap=300)
     chunks = c.split_text(sample_text.strip(), source_file="test_contract.pdf")
  
     print(f"  Total chunks    : {len(chunks)}")

@@ -24,24 +24,40 @@ class GraphBuilder:
  
     @staticmethod
     def _safe_label(label: str) -> str:
-        safe = re.sub(r"[^a-zA-Z0-9_\-]", "_", label).strip("_")[:200]
+        safe = re.sub(r"[^a-zA-Z0-9_\-]", "_", str(label)).strip("_")[:200]
         return safe if safe else "unknown"
  
+    def _vertex_exists(self, vid: str) -> bool:
+        try:
+            result = graph_client.execute(
+                "g.V().hasId(vid).count()",
+                bindings={"vid": vid},
+            )
+            return bool(result and result[0] > 0)
+        except Exception as e:
+            logger.warning("Vertex existence check failed for '%s': %s", vid, e)
+            return False
+ 
+    def _edge_exists(self, from_id: str, rel_type: str, to_id: str) -> bool:
+        try:
+            result = graph_client.execute(
+                "g.V().hasId(fid).out(etype).hasId(tid).count()",
+                bindings={"fid": from_id, "etype": rel_type, "tid": to_id},
+            )
+            return bool(result and result[0] > 0)
+        except Exception as e:
+            logger.warning("Edge existence check failed: %s", e)
+            return False
+ 
     def build(self, extraction_result: ExtractionResult) -> dict[str, int]:
-        logger.info(
-            "Building graph | source=%s | entities=%d | relationships=%d",
-            extraction_result.source_file,
-            len(extraction_result.entities),
-            len(extraction_result.relationships),
-        )
  
         vertices_created = 0
         vertices_skipped = 0
         edges_created    = 0
         edges_skipped    = 0
  
-        source_file    = extraction_result.source_file
-        contract_label = self._safe_label(Path(source_file).stem)
+        source_file     = extraction_result.source_file
+        contract_label  = self._safe_label(Path(source_file).stem)
  
         _TYPE_TO_EDGE = {
             "PARTY":          "HAS_PARTY",
@@ -52,46 +68,76 @@ class GraphBuilder:
             "GOVERNING_LAW":  "HAS_GOVERNING_LAW",
         }
  
-        # ── Step 1: CONTRACT hub vertex ──────────────────────────────
-        ok = self._upsert_vertex(contract_label, "CONTRACT", source_file,
-                                 {"file_name": source_file})
-        vertices_created += ok; vertices_skipped += (not ok)
+        # ── Step 1: CONTRACT hub vertex ───────────────────────────────
+        if self._vertex_exists(contract_label):
+            vertices_skipped += 1
+        else:
+            try:
+                graph_client.execute(
+                    "g.addV('CONTRACT')"
+                    ".property('id', vid)"
+                    ".property('pk', vpk)"
+                    ".property('entity_label', vid)"
+                    ".property('entity_type', 'CONTRACT')"
+                    ".property('source_file', src)",
+                    bindings={
+                        "vid": contract_label,
+                        "vpk": contract_label,
+                        "src": source_file,
+                    },
+                )
+                vertices_created += 1
+                logger.debug("Created CONTRACT vertex: %s", contract_label)
+            except Exception as e:
+                logger.error("Failed to create CONTRACT vertex: %s", e)
  
-        # ── Step 2: ENTITY_TYPE shared vertices ──────────────────────
-        seen_types: set[str] = set()
+        # ── Step 2: Entity value vertices ─────────────────────────────
         for entity in extraction_result.entities:
-            if entity.type not in seen_types:
-                seen_types.add(entity.type)
-                safe_type = self._safe_label(entity.type)
-                ok = self._upsert_vertex(safe_type, "ENTITY_TYPE", "shared",
-                                         {"description": entity.type.replace("_", " ").title()})
-                vertices_created += ok; vertices_skipped += (not ok)
+            vid = self._safe_label(entity.label)
+            if self._vertex_exists(vid):
+                vertices_skipped += 1
+                continue
+            try:
+                graph_client.execute(
+                    "g.addV(etype)"
+                    ".property('id', vid)"
+                    ".property('pk', vpk)"
+                    ".property('entity_label', vid)"
+                    ".property('entity_type', etype)"
+                    ".property('source_file', src)",
+                    bindings={
+                        "etype": entity.type,
+                        "vid":   vid,
+                        "vpk":   contract_label,
+                        "src":   source_file,
+                    },
+                )
+                vertices_created += 1
+                logger.debug("Created vertex: %s [%s]", vid, entity.type)
+            except Exception as e:
+                logger.error("Failed to create vertex '%s': %s", vid, e)
  
-        # ── Step 3: entity value vertices ────────────────────────────
+        # ── Step 3: CONTRACT → entity edges ───────────────────────────
         for entity in extraction_result.entities:
-            safe = self._safe_label(entity.label)
-            ok = self._upsert_vertex(safe, entity.type, source_file,
-                                     entity.properties)
-            vertices_created += ok; vertices_skipped += (not ok)
- 
-        # ── Step 4: edges ─────────────────────────────────────────────
-        for entity in extraction_result.entities:
-            safe = self._safe_label(entity.label)
+            vid        = self._safe_label(entity.label)
             edge_label = _TYPE_TO_EDGE.get(entity.type, "HAS_ENTITY")
  
-            # CONTRACT → entity value
-            ok = self._upsert_edge(contract_label, edge_label, safe)
-            edges_created += ok; edges_skipped += (not ok)
- 
-            # ENTITY_TYPE → entity value
-            safe_type = self._safe_label(entity.type)
-            ok = self._upsert_edge(safe_type, "IS_A", safe)
-            edges_created += ok; edges_skipped += (not ok)
- 
-        # ── Step 5: LLM relationships ─────────────────────────────────
-        for rel in extraction_result.relationships:
-            ok = self._upsert_edge(rel.from_id, rel.type, rel.to_id)
-            edges_created += ok; edges_skipped += (not ok)
+            if self._edge_exists(contract_label, edge_label, vid):
+                edges_skipped += 1
+            else:
+                try:
+                    graph_client.execute(
+                        "g.V().hasId(fid).addE(etype).to(g.V().hasId(tid))",
+                        bindings={
+                            "fid":   contract_label,
+                            "etype": edge_label,
+                            "tid":   vid,
+                        },
+                    )
+                    edges_created += 1
+                    logger.debug("Edge: %s -[%s]-> %s", contract_label, edge_label, vid)
+                except Exception as e:
+                    logger.error("Failed to create edge %s->%s: %s", contract_label, vid, e)
  
         stats = {
             "vertices_created": vertices_created,
@@ -101,83 +147,6 @@ class GraphBuilder:
         }
         logger.info("Graph build complete | %s", stats)
         return stats
- 
-    # ── Vertex upsert — try create, treat 409 as already-exists ──────
-    def _upsert_vertex(
-        self,
-        safe_label: str,
-        entity_type: str,
-        source_file: str,
-        properties: dict,
-    ) -> bool:
-        """Returns True if created, False if already existed or failed."""
-        query = (
-            "g.addV(entityType)"
-            ".property('id',           safeLabel)"
-            ".property('pk',           pk)"
-            ".property('entity_label', safeLabel)"
-            ".property('entity_type',  entityType)"
-            ".property('source_file',  src)"
-        )
-        bindings: dict = {
-            "entityType": entity_type,
-            "safeLabel":  safe_label,
-            "pk":         source_file,
-            "src":        source_file,
-        }
-        # Attach extra properties
-        for i, (k, v) in enumerate(properties.items()):
-            if v is not None:
-                pk_key = f"pk_{i}"; pv_key = f"pv_{i}"
-                query += f".property({pk_key}, {pv_key})"
-                bindings[pk_key] = str(k)
-                bindings[pv_key] = str(v)
- 
-        try:
-            graph_client.execute(query, bindings=bindings)
-            logger.debug("Vertex created: '%s'", safe_label)
-            return True
-        except Exception as exc:
-            msg = str(exc)
-            if "409" in msg or "Conflict" in msg or "already exists" in msg.lower():
-                logger.debug("Vertex already exists (409): '%s'", safe_label)
-                return False
-            logger.error("Vertex creation failed for '%s': %s", safe_label, exc)
-            return False
- 
-    # ── Edge upsert — try create, treat 409 as already-exists ────────
-    def _upsert_edge(
-        self,
-        from_id: str,
-        edge_type: str,
-        to_id: str,
-    ) -> bool:
-        """Returns True if created, False if already existed or failed."""
-        try:
-            graph_client.execute(
-                "g.V(fromId).addE(edgeType).to(g.V(toId))",
-                bindings={
-                    "fromId":   from_id,
-                    "edgeType": edge_type,
-                    "toId":     to_id,
-                },
-            )
-            logger.debug("Edge created: %s -[%s]-> %s", from_id, edge_type, to_id)
-            return True
-        except Exception as exc:
-            msg = str(exc)
-            if "409" in msg or "Conflict" in msg or "already exists" in msg.lower():
-                logger.debug("Edge already exists (409): %s -[%s]-> %s",
-                             from_id, edge_type, to_id)
-                return False
-            # Vertex missing — log warning, not error
-            if "not found" in msg.lower() or "404" in msg:
-                logger.warning("Edge skipped — vertex missing: %s or %s",
-                               from_id, to_id)
-                return False
-            logger.error("Edge creation failed %s -[%s]-> %s : %s",
-                         from_id, edge_type, to_id, exc)
-            return False
  
     def get_graph_summary(self) -> dict[str, int]:
         return {
@@ -207,32 +176,23 @@ if __name__ == "__main__":
     print("\n=== GraphBuilder Smoke Test ===\n")
  
     sample_text = """
-    THIS MASTER SERVICES AGREEMENT is entered into as of January 1, 2025,
+    THIS AGREEMENT is entered into as of January 1, 2025,
     by and between Acme Corporation ("Client") and TechVendor Inc. ("Vendor").
-    Client shall pay Vendor a monthly retainer of $50,000 within 30 days of invoice.
-    Late payments shall accrue interest at 1.5% per month.
-    Either party may terminate this Agreement with 30 days written notice.
-    This Agreement shall be governed by the laws of the State of Delaware.
+    Payment of $50,000 monthly within 30 days. Governed by laws of Delaware.
     """.strip()
  
-    builder = GraphBuilder()
- 
-    print("1. Extracting entities...")
     extraction = entity_extractor.extract(sample_text, source_file="smoke_test.pdf")
-    print(f"   Entities: {len(extraction.entities)}")
+    print(f"Entities: {len(extraction.entities)}")
     for e in extraction.entities:
-        print(f"   [{e.type}] {e.label} → {builder._safe_label(e.label)}")
+        print(f"  [{e.type}] {e.label} → id='{GraphBuilder._safe_label(e.label)}'")
  
-    print("\n2. Building graph...")
-    stats = builder.build(extraction)
-    print(f"   Vertices created : {stats['vertices_created']}")
-    print(f"   Vertices skipped : {stats['vertices_skipped']}")
-    print(f"   Edges created    : {stats['edges_created']}")
-    print(f"   Edges skipped    : {stats['edges_skipped']}")
+    stats = graph_builder.build(extraction)
+    print(f"\nVertices created : {stats['vertices_created']}")
+    print(f"Vertices skipped : {stats['vertices_skipped']}")
+    print(f"Edges created    : {stats['edges_created']}")
+    print(f"Edges skipped    : {stats['edges_skipped']}")
  
-    print("\n3. Graph summary...")
-    summary = builder.get_graph_summary()
-    print(f"   Total vertices: {summary['total_vertices']}")
-    print(f"   Total edges   : {summary['total_edges']}")
- 
+    summary = graph_builder.get_graph_summary()
+    print(f"\nTotal vertices: {summary['total_vertices']}")
+    print(f"Total edges   : {summary['total_edges']}")
     print("\n=== Done ===\n")

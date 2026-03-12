@@ -123,12 +123,19 @@ class EntityExtractor:
     # Valid entity and relationship types for validation
     _VALID_ENTITY_TYPES = {
         "PARTY", "DATE", "CLAUSE", "FINANCIAL_TERM",
-        "OBLIGATION", "GOVERNING_LAW",
+        "OBLIGATION", "GOVERNING_LAW", "PRODUCT", "LOCATION",
     }
     _VALID_RELATIONSHIP_TYPES = {
+        # Original
         "PARTY_TO_CONTRACT", "CLAUSE_CONTAINS_OBLIGATION",
         "OBLIGATION_ASSIGNED_TO", "FINANCIAL_TERM_IN_CLAUSE",
         "GOVERNED_BY", "EFFECTIVE_FROM", "EXPIRES_ON",
+        # New rich relationships
+        "PARTY_IS_BUYER", "PARTY_IS_SELLER",
+        "PARTY_HAS_OBLIGATION", "CLAUSE_CONTAINS_FINANCIAL_TERM",
+        "PARTY_SUPPLIES", "PARTY_RECEIVES",
+        "DELIVERY_LOCATION", "OBLIGATION_TRIGGERS_FINANCIAL_TERM",
+        "PARTY_GOVERNED_BY",
     }
  
     def __init__(self) -> None:
@@ -228,7 +235,8 @@ class EntityExtractor:
         )
  
         return self.extract(combined_text, source_file)
-    # ------------------------------------------------------------------
+    
+# ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
     def _parse_response(

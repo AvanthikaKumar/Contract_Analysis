@@ -36,3 +36,4 @@ except Exception as exc:
     sys.exit(1)
  
 print("Index reset complete. You can now re-upload your contracts.\n")
+ 

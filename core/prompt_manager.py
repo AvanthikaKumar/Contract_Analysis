@@ -197,4 +197,3 @@ if __name__ == "__main__":
         print(f"[PromptRenderError caught correctly] {exc}")
  
     print("\nPromptManager smoke test complete.")
- 

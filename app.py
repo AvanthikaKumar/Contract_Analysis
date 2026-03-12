@@ -48,6 +48,8 @@ if "chat_history" not in st.session_state:
     st.session_state["chat_history"] = []
 if "pending_query" not in st.session_state:
     st.session_state["pending_query"] = None
+if "last_uploaded_file" not in st.session_state:
+    st.session_state["last_uploaded_file"] = None
  
  
 # ══════════════════════════════════════════════════════════════════════════
@@ -165,6 +167,7 @@ with st.sidebar:
                     st.error(f"❌ Processing failed: {exc}")
  
                 st.session_state["processed_files"][uf.name] = result
+                st.session_state["last_uploaded_file"] = uf.name  # track most recently processed
  
                 if not result["error"]:
                     st.success(f"✅ **{uf.name}** processed successfully!")
@@ -305,7 +308,33 @@ def _process_query(query: str) -> None:
                 fname for fname, res in st.session_state["processed_files"].items()
                 if not res.get("error")
             ]
-            response = query_engine.run(query=query, memory=memory, known_files=known_files)
+ 
+            # If query uses "this contract" / "the contract" with no specific name,
+            # default to the most recently uploaded file instead of searching all
+            vague_phrases = [
+                "this contract", "the contract", "this agreement",
+                "the agreement", "this document", "the document",
+            ]
+            query_lower = query.lower()
+            is_vague = any(p in query_lower for p in vague_phrases)
+            # Check no specific file name is mentioned
+            any_name_mentioned = any(
+                word in query_lower
+                for fname in known_files
+                for word in fname.lower().replace("_", " ").replace("-", " ").split()
+                if len(word) > 3
+            )
+            # If vague and no specific name → use last uploaded file
+            default_file = None
+            if is_vague and not any_name_mentioned:
+                default_file = st.session_state.get("last_uploaded_file")
+ 
+            response = query_engine.run(
+                query=query,
+                memory=memory,
+                known_files=known_files,
+                source_file=default_file,
+            )
  
         st.markdown(response.answer)
  

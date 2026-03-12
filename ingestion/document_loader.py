@@ -1,25 +1,30 @@
 """
 ingestion/document_loader.py
 -----------------------------
-Extracts raw text from uploaded contract PDF files using
-Azure Document Intelligence (formerly Form Recognizer).
+Extracts text from PDF contracts using PyPDF — free, local, no API limits.
+ 
+Replaces Azure Document Intelligence (which has a 2-page free tier limit).
+PyPDF reads all pages regardless of document length.
  
 Responsibilities:
 - Accept raw PDF bytes from Streamlit file uploader.
-- Send bytes to Azure Document Intelligence prebuilt-read model.
-- Return clean extracted text with page structure preserved.
-- Handle multi-page documents gracefully.
+- Extract text from every page using PyPDF.
+- Skip blank pages and continue processing.
+- Return a clean ExtractedDocument ready for chunking.
  
 Usage:
     from ingestion.document_loader import document_loader
  
-    text = document_loader.extract_text(file_bytes, file_name)
+    doc = document_loader.extract_text(file_bytes, file_name)
+    print(doc.page_count)
+    print(doc.full_text[:500])
 """
  
+import io
 import logging
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
  
 # ---------------------------------------------------------------------------
 # Path fix
@@ -28,58 +33,29 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
  
-from azure.ai.documentintelligence import DocumentIntelligenceClient
-from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
-from azure.core.credentials import AzureKeyCredential
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-    before_sleep_log,
-)
- 
-from config.settings import settings
+from pypdf import PdfReader
  
 logger = logging.getLogger(__name__)
- 
-# ---------------------------------------------------------------------------
-# Retry policy
-# ---------------------------------------------------------------------------
-_RETRY_POLICY = dict(
-    retry=retry_if_exception_type(Exception),
-    wait=wait_exponential(multiplier=1, min=2, max=20),
-    stop=stop_after_attempt(3),
-    before_sleep=before_sleep_log(logger, logging.WARNING),
-    reraise=True,
-)
  
  
 # ---------------------------------------------------------------------------
 # Extracted document dataclass
 # ---------------------------------------------------------------------------
+@dataclass
 class ExtractedDocument:
     """
-    Holds the result of a document extraction.
+    The result of text extraction from a PDF.
  
     Attributes:
-        file_name:   Original uploaded file name.
-        full_text:   Complete extracted text from all pages.
-        pages:       List of per-page text strings.
-        page_count:  Total number of pages detected.
+        file_name:  Original filename.
+        full_text:  All extracted text joined across pages.
+        pages:      List of per-page text strings (blank pages excluded).
+        page_count: Number of non-blank pages successfully extracted.
     """
- 
-    def __init__(
-        self,
-        file_name: str,
-        full_text: str,
-        pages: list[str],
-        page_count: int,
-    ) -> None:
-        self.file_name = file_name
-        self.full_text = full_text
-        self.pages = pages
-        self.page_count = page_count
+    file_name: str
+    full_text: str
+    pages: list[str] = field(default_factory=list)
+    page_count: int = 0
  
     def __repr__(self) -> str:
         return (
@@ -95,103 +71,85 @@ class ExtractedDocument:
 # ---------------------------------------------------------------------------
 class DocumentLoader:
     """
-    Wraps Azure Document Intelligence to extract text from PDF bytes.
+    Extracts text from PDF files using PyPDF.
  
-    Uses the prebuilt-read model which is optimised for dense text
-    documents like contracts and legal agreements.
+    Processes all pages in the document with no page limit.
+    Blank pages are logged and skipped — extraction continues
+    through the rest of the document.
     """
  
     def __init__(self) -> None:
-        cfg = settings.document_intelligence
-        self._client = DocumentIntelligenceClient(
-            endpoint=cfg.endpoint,
-            credential=AzureKeyCredential(cfg.api_key),
-        )
-        logger.info(
-            "DocumentLoader initialised | endpoint=%s", cfg.endpoint
-        )
+        logger.info("DocumentLoader initialised (PyPDF backend).")
  
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-    @retry(**_RETRY_POLICY)
     def extract_text(
         self,
         file_bytes: bytes,
-        file_name: str = "document.pdf",
+        file_name: str,
     ) -> ExtractedDocument:
         """
         Extract text from a PDF supplied as raw bytes.
  
         Args:
-            file_bytes: Raw bytes of the uploaded PDF file.
-            file_name:  Original filename (used for logging and metadata).
+            file_bytes: Raw PDF bytes from Streamlit file uploader.
+            file_name:  Original filename for metadata.
  
         Returns:
             ExtractedDocument with full text and per-page breakdown.
  
         Raises:
             ValueError: If file_bytes is empty.
-            Exception:  If Azure Document Intelligence call fails after retries.
+            RuntimeError: If the PDF cannot be read.
         """
         if not file_bytes:
             raise ValueError("file_bytes cannot be empty.")
  
-        logger.info(
-            "Starting text extraction | file=%s | size=%.1f KB",
-            file_name,
-            len(file_bytes) / 1024,
-        )
+        logger.info("Extracting text from '%s' (%d bytes)", file_name, len(file_bytes))
  
-        # Submit to Azure Document Intelligence
-        # SDK v1.0.0 requires model_id and body as positional arguments
-        poller = self._client.begin_analyze_document(
-            "prebuilt-read",
-            AnalyzeDocumentRequest(bytes_source=file_bytes),
-            output_content_format="markdown",  # better structure preservation
-        )
+        try:
+            reader = PdfReader(io.BytesIO(file_bytes))
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to open PDF '{file_name}': {exc}"
+            ) from exc
  
-        result = poller.result()
+        total_pages = len(reader.pages)
+        logger.info("PDF has %d total pages.", total_pages)
  
-        # Build per-page text list — skip blank pages but continue processing
         pages: list[str] = []
         blank_pages: list[int] = []
-        page_position = 0
  
-        for page in result.pages or []:
-            page_position += 1
-            page_lines = []
-            for line in page.lines or []:
-                line_text = line.content.strip()
-                if line_text:
-                    page_lines.append(line_text)
- 
-            page_text = "\n".join(page_lines).strip()
+        for i, page in enumerate(reader.pages, start=1):
+            try:
+                raw_text = page.extract_text() or ""
+                page_text = raw_text.strip()
+            except Exception as exc:
+                logger.warning("Failed to extract text from page %d: %s", i, exc)
+                page_text = ""
  
             if not page_text:
-                blank_pages.append(page_position)
-                logger.info(
-                    "Blank page at position %d — skipping, continuing extraction.",
-                    page_position,
-                )
+                blank_pages.append(i)
+                logger.debug("Page %d is blank — skipping, continuing.", i)
                 continue
  
             pages.append(page_text)
  
         if blank_pages:
             logger.info(
-                "Skipped %d blank page(s) at positions: %s",
-                len(blank_pages),
-                blank_pages,
+                "Skipped %d blank page(s): %s", len(blank_pages), blank_pages
             )
  
         full_text = "\n\n".join(pages)
-        page_count = len(pages)
  
         logger.info(
-            "Extraction complete | file=%s | pages=%d | chars=%d",
+            "Extraction complete | file=%s | total_pages=%d | "
+            "extracted=%d | blank=%d | chars=%d",
             file_name,
-            page_count,
+            total_pages,
+            len(pages),
+            len(blank_pages),
             len(full_text),
         )
  
@@ -199,8 +157,25 @@ class DocumentLoader:
             file_name=file_name,
             full_text=full_text,
             pages=pages,
-            page_count=page_count,
+            page_count=len(pages),
         )
+ 
+    def extract_from_path(self, pdf_path: str | Path) -> ExtractedDocument:
+        """
+        Convenience method to extract text directly from a file path.
+ 
+        Args:
+            pdf_path: Path to the PDF file.
+ 
+        Returns:
+            ExtractedDocument with extracted text.
+        """
+        pdf_path = Path(pdf_path)
+        if not pdf_path.exists():
+            raise FileNotFoundError(f"PDF not found: {pdf_path}")
+ 
+        file_bytes = pdf_path.read_bytes()
+        return self.extract_text(file_bytes, pdf_path.name)
  
  
 # ---------------------------------------------------------------------------
@@ -213,41 +188,27 @@ document_loader = DocumentLoader()
 # Smoke test — python ingestion/document_loader.py
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    import os
+    print("\n=== DocumentLoader Smoke Test (PyPDF) ===\n")
  
-    print("\n=== DocumentLoader Smoke Test ===\n")
- 
-    # Find all PDFs in project root
+    # Find PDFs in project root
     pdf_files = sorted(_PROJECT_ROOT.glob("*.pdf"))
  
     if not pdf_files:
-        print("No PDFs found in project root for testing.")
-        print("Place any PDF in the project root and re-run.")
+        print("No PDF files found in project root.")
+        print("Place a PDF in the project root and re-run.\n")
         sys.exit(0)
- 
-    print(f"Found {len(pdf_files)} PDF(s):\n")
-    for f in pdf_files:
-        print(f"  - {f.name}")
-    print()
  
     loader = DocumentLoader()
  
-    for test_pdf in pdf_files:
-        print(f"--- Processing: {test_pdf.name} ---")
+    for pdf_path in pdf_files:
+        print(f"Testing: {pdf_path.name}")
         try:
-            with open(test_pdf, "rb") as fh:
-                raw_bytes = fh.read()
- 
-            doc = loader.extract_text(raw_bytes, test_pdf.name)
- 
-            print(f"  File Name  : {doc.file_name}")
-            print(f"  Pages      : {doc.page_count}")
-            print(f"  Total chars: {len(doc.full_text)}")
-            print(f"  First 300 chars:")
-            print(f"  {doc.full_text[:300]}")
+            doc = loader.extract_from_path(pdf_path)
+            print(f"  Total pages extracted : {doc.page_count}")
+            print(f"  Total characters      : {len(doc.full_text):,}")
+            print(f"  Preview (first 300)   : {doc.full_text[:300].strip()}")
             print(f"  PASSED\n")
         except Exception as exc:
             print(f"  FAILED: {exc}\n")
  
     print("=== Smoke test complete ===\n")
- 

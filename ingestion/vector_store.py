@@ -60,7 +60,7 @@ _FIELD_TEXT = "text"
 _FIELD_SOURCE = "source_file"
 _FIELD_INDEX = "chunk_index"
 _FIELD_VECTOR = "embedding"
-_VECTOR_DIMENSIONS = 1536       # text-embedding-3-large output size
+_VECTOR_DIMENSIONS = 1536       # text-embedding-3-small output size
 _ALGORITHM_NAME = "hnsw-config"
 _PROFILE_NAME = "vector-profile"
  
@@ -328,8 +328,7 @@ class VectorStore:
 # Module-level singleton
 # ---------------------------------------------------------------------------
 vector_store = VectorStore()
- 
- 
+
 # ---------------------------------------------------------------------------
 # Smoke test — python ingestion/vector_store.py
 # ---------------------------------------------------------------------------
@@ -398,4 +397,3 @@ if __name__ == "__main__":
         print(f"   FAILED: {exc}\n")
  
     print("=== Smoke test complete ===\n")
- 

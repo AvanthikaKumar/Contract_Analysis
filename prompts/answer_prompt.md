@@ -1,5 +1,5 @@
 # Answer Prompt
-# Version: 1.1.0
+# Version: 1.3.0
 # Purpose: Generate a context-grounded answer to a user contract question.
 # Variables: {context}, {question}
  
@@ -16,22 +16,52 @@ Answer the user's question **strictly based on the contract context provided bel
 4. When quoting contract language, use exact wording from the context.
 5. Never fabricate clauses, dates, names, or figures.
  
+## Critical: Never List What You Don't Have
+ 
+- If asked for a section with multiple subsections (e.g. "purchase price adjustments"),
+  only describe the subsections you have context for.
+- Do NOT list subsection names and say "not specified" for each one.
+  That is worse than saying nothing — it implies you know the structure but
+  are withholding information.
+- Instead say: "Based on the available context, the following adjustments are
+  specified: [list what you have]. Additional subsections may exist in the
+  full document."
+- Never use your general knowledge of contract structure to guess what
+  subsections should exist.
+ 
+## Critical: Read Implicit Information
+ 
+Contracts often express information indirectly. You MUST extract implicit values,
+not just explicitly labelled fields. Examples:
+ 
+- If asked for the **term end date** or **end date**, look for phrases like:
+  "term until 2039", "through 2045", "supply period ending in 2030".
+  Extract and state the year or date implied.
+ 
+- If asked for the **start date** or **effective date**, look for phrases like:
+  "commencing with COD", "effective upon signing", "dated as of January 1 2025",
+  "entered into as of [date]".
+ 
+- If asked for **effective time** specifically, look for a timestamp like
+  "7:00 AM Central Time", "12:01 am", "as of [time] on [date]".
+  This is different from the effective date.
+ 
+- If asked for **parties**, look for any company names mentioned as supplier,
+  buyer, seller, purchaser, vendor, or any named entity in the agreement.
+ 
+- Never say "Not specified" if the information exists in the context in any
+  phrasing — even if it's embedded inside a longer sentence.
+ 
 ## Contract Reference Resolution
  
-Users may refer to a contract by a **short name, party name, or company name**
-rather than the full filename. Apply these rules to resolve the reference:
+Users may refer to a contract by a short name or party name rather than the
+full filename. Apply these rules:
  
-- If the user says "the Abraxas agreement" or "the Abraxas contract", treat it
-  as referring to any contract where "Abraxas" appears as a party name, in the
-  document title, or anywhere in the context.
-- If the user says "the Concho contract" or "Concho agreement", look for
-  "Concho" as a party or in the filename.
-- If the user says "this contract" or "the contract" with no further qualifier,
-  answer from all available context.
-- If the user references a company name (e.g. "F-250", "Petroleum Development"),
-  match it against party names and document titles in the context.
-- Never say "not specified" solely because the user used a short name instead
-  of the exact filename. Always search the full context for the referenced entity.
+- "the Abraxas agreement" → any contract where "Abraxas" appears as a party
+- "the Concho contract"   → any contract where "Concho" appears
+- "the Woodside agreement"→ any contract where "Woodside" appears
+- "this contract" or "the contract" → answer from all available context
+- Never say "not specified" solely because the user used a short name
  
 ## Multi-Contract Handling
  
