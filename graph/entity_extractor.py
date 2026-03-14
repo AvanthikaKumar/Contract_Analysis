@@ -191,7 +191,7 @@ class EntityExtractor:
                 {"role": "user", "content": prompt},
             ],
             temperature=0.0,
-            max_tokens=2000,
+            max_tokens=4000,
         )
  
         # Parse and validate response
