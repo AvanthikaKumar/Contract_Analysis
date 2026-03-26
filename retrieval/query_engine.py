@@ -50,16 +50,20 @@ class QueryEngine:
     def run(
         self,
         query: str,
-        memory=None,           # kept for backward compat — LangGraph handles memory internally
+        memory=None,
         source_file: str | None = None,
         top_k: int | None = None,
         known_files: list[str] | None = None,
+        use_graph: bool = True,
     ) -> QueryResponse:
  
         if not query or not query.strip():
             return QueryResponse(query=query, answer="Please enter a question.", is_grounded=False)
  
-        logger.info("QueryEngine.run (LangGraph) | query='%s'", query[:80])
+        logger.info(
+            "QueryEngine.run | query='%s' | mode=%s",
+            query[:80], "GraphRAG" if use_graph else "RAG",
+        )
  
         # Build initial state
         initial_state: ContractState = {
@@ -73,6 +77,7 @@ class QueryEngine:
             "source_files":    [],
             "is_out_of_scope": False,
             "is_grounded":     True,
+            "use_graph":       use_graph,
         }
  
         # Run through LangGraph — thread_id enables per-session memory
@@ -130,3 +135,4 @@ class QueryEngine:
  
  
 query_engine = QueryEngine()
+ 

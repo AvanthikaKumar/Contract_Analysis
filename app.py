@@ -50,6 +50,8 @@ if "pending_query" not in st.session_state:
     st.session_state["pending_query"] = None
 if "last_uploaded_file" not in st.session_state:
     st.session_state["last_uploaded_file"] = None
+if "use_graph" not in st.session_state:
+    st.session_state["use_graph"] = True  # default GraphRAG
  
  
 # ══════════════════════════════════════════════════════════════════════════
@@ -179,7 +181,7 @@ with st.sidebar:
                     c4.metric("💾 Vectors", result["vectors_stored"])
                     c5.metric("🕸️ Vertices", result["vertices_created"])
                     c6.metric("➡️ Edges", result["edges_created"])
- 
+
             st.success("🎉 All contracts processed. Ask questions on the right →")
  
     # ── Processed files history ────────────────────────────────────────
@@ -237,6 +239,31 @@ st.markdown(
 )
 st.divider()
  
+# ── Mode toggle ───────────────────────────────────────────────────────────
+col1, col2 = st.columns([3, 2])
+with col1:
+    st.markdown("**Select Query Mode:**")
+with col2:
+    mode = st.radio(
+        label="mode",
+        options=["⚡ RAG", "🕸️ GraphRAG"],
+        index=1 if st.session_state["use_graph"] else 0,
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    use_graph = mode == "🕸️ GraphRAG"
+    if use_graph != st.session_state["use_graph"]:
+        st.session_state["use_graph"] = use_graph
+        st.rerun()
+ 
+# Mode description
+if st.session_state["use_graph"]:
+    st.info("🕸️ **GraphRAG mode** — Vector search + Knowledge graph traversal. Relationship-aware answers.")
+else:
+    st.warning("⚡ **RAG mode** — Vector search only. No graph traversal. Standard retrieval.")
+ 
+st.divider()
+
 # ── Guard ──────────────────────────────────────────────────────────────────
 has_contracts = any(
     not r.get("error")
@@ -245,7 +272,8 @@ has_contracts = any(
 if not has_contracts:
     st.warning("⚠️ No contracts indexed yet. Upload and process a contract in the left panel first.")
     st.stop()
-
+ 
+ 
 # ── Metadata renderer ─────────────────────────────────────────────────────
 def _render_metadata(meta: dict) -> None:
     """Show extracted metadata and supporting context below an answer."""
@@ -334,6 +362,7 @@ def _process_query(query: str) -> None:
                 memory=memory,
                 known_files=known_files,
                 source_file=default_file,
+                use_graph=st.session_state.get("use_graph", True),
             )
  
         st.markdown(response.answer)
@@ -392,3 +421,4 @@ if st.session_state["pending_query"]:
 # ── Chat input ─────────────────────────────────────────────────────────────
 if query := st.chat_input("Ask a question about your contract..."):
     _process_query(query)
+ 

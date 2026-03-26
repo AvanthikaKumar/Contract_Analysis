@@ -57,6 +57,7 @@ class ContractState(TypedDict):
     source_files:    list
     is_out_of_scope: bool
     is_grounded:     bool
+    use_graph:       bool   # True = GraphRAG, False = RAG only
  
  
 # ── Helper ─────────────────────────────────────────────────────────────────
@@ -131,7 +132,8 @@ _TERM_SYNONYMS = {
     "term end date":       "term end date expiration date end of term contract end termination date term until supply period ends through until 2039 2040 2041 2042 2043 2044 2045 2050",
     "end date":            "end date expiration term until through supply period end contract duration ends",
     "start date":          "start date commencement date effective date agreement date COD commercial operations date",
-    "effective date":      "effective date commencement date start date execution date COD",
+    "effective time":      "effective time purchase and sale effective as of local time 12:01 economic effective date transaction effective",
+    "effective date":      "effective date commencement date start date execution date signed dated as of entered into",
     "duration":            "duration term period supply period years until through commencing",
     "termination":         "termination cancellation end of agreement notice period",
     "payment terms":       "payment terms consideration purchase price compensation fees",
@@ -153,22 +155,25 @@ def _expand_query(query: str) -> str:
  
  
 def retrieve_node(state: ContractState) -> dict:
-    logger.info("[LangGraph] retrieve_node | file_filter='%s'", state.get("source_file", ""))
+    use_graph = state.get("use_graph", True)
+    logger.info("[LangGraph] retrieve_node | mode=%s", "GraphRAG" if use_graph else "RAG")
     try:
-        source_file    = state.get("source_file") or None
-        known_files    = state.get("known_files") or []
-        expanded_query = _expand_query(state["query"])
+        source_file = state.get("source_file") or None
+        known_files = state.get("known_files") or []
+ 
+        # GraphRAG — expand query with legal synonyms for better retrieval
+        # RAG — use query as-is, no expansion
+        expanded_query = _expand_query(state["query"]) if use_graph else state["query"]
         query_vector   = embedder.embed_query(expanded_query)
  
-        # Detect compare / cross-document intent
         compare_keywords = [
             "compare", "both", "difference", "versus", "vs",
             "across", "between", "all contracts", "both contracts",
         ]
         is_compare = any(kw in state["query"].lower() for kw in compare_keywords)
  
-        if is_compare and len(known_files) >= 2 and not source_file:
-            # Fetch chunks from EACH contract separately so no contract is skipped
+        if use_graph and is_compare and len(known_files) >= 2 and not source_file:
+            # GraphRAG mode — guaranteed per-contract retrieval for compare queries
             all_results = []
             per_file_k  = max(3, settings.app.retrieval_top_k // len(known_files))
             for fname in known_files:
@@ -178,14 +183,14 @@ def retrieve_node(state: ContractState) -> dict:
                     source_file=fname,
                 )
                 all_results.extend(file_results)
-                logger.info(
-                    "[LangGraph] retrieve_node | file=%s | chunks=%d", fname, len(file_results)
-                )
+                logger.info("[LangGraph] retrieve_node | file=%s | chunks=%d", fname, len(file_results))
             results = all_results
         else:
+            # RAG mode — single vector search, lower top_k
+            top_k = settings.app.retrieval_top_k if use_graph else min(5, settings.app.retrieval_top_k)
             results = vector_store.search(
                 query_vector=query_vector,
-                top_k=settings.app.retrieval_top_k,
+                top_k=top_k,
                 source_file=source_file if source_file else None,
             )
  
@@ -193,7 +198,8 @@ def retrieve_node(state: ContractState) -> dict:
         context      = "\n\n---\n\n".join(parts)
         sources      = [r.text for r in results]
         source_files = list({r.source_file for r in results})
-        logger.info("[LangGraph] retrieve_node | total_chunks=%d", len(results))
+        logger.info("[LangGraph] retrieve_node | chunks=%d | mode=%s",
+                    len(results), "GraphRAG" if use_graph else "RAG")
  
     except Exception as exc:
         logger.error("Retrieval failed: %s", exc)
@@ -439,6 +445,11 @@ def route_after_scope(state: ContractState) -> str:
     return "reject" if state.get("is_out_of_scope") else "retrieve"
 
 # ── Build graph ────────────────────────────────────────────────────────────
+def route_after_retrieve(state: ContractState) -> str:
+    """Route to graph_lookup if GraphRAG mode, else skip directly to generate."""
+    return "graph_lookup" if state.get("use_graph", True) else "generate"
+ 
+ 
 def build_contract_graph():
     builder = StateGraph(ContractState)
  
@@ -454,8 +465,12 @@ def build_contract_graph():
         route_after_scope,
         {"reject": "reject", "retrieve": "retrieve"},
     )
-    builder.add_edge("reject",       END)
-    builder.add_edge("retrieve",     "graph_lookup")
+    builder.add_edge("reject", END)
+    builder.add_conditional_edges(
+        "retrieve",
+        route_after_retrieve,
+        {"graph_lookup": "graph_lookup", "generate": "generate"},
+    )
     builder.add_edge("graph_lookup", "generate")
     builder.add_edge("generate",     END)
  
